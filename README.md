@@ -1,5 +1,15 @@
 # dagre-rs
 
+> **This repository is no longer the development home for dagre-rs.**
+>
+> The project has been merged into
+> [**Actrium/supramark**](https://github.com/Actrium/supramark) via `git subtree`
+> and now lives at
+> [`crates/dagre/`](https://github.com/Actrium/supramark/tree/main/crates/dagre).
+> Ongoing development and issues are handled there.
+>
+> The history here remains available for reference.
+
 A complete Rust port of [dagre.js](https://github.com/dagrejs/dagre) -- hierarchical directed graph layout using the Sugiyama method.
 
 ## Features
