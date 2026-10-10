@@ -20,6 +20,50 @@ use crate::layout::types::{EdgeLabel, NodeLabel};
 use crate::layout::util::simplify;
 use std::collections::BTreeSet;
 
+/// Yieldable state machine for the network simplex exchange loop.
+///
+/// `new()` runs the expensive but non-yieldable setup (longest_path,
+/// feasible_tree, init_low_lim_values, init_cut_values) once.
+/// Each call to `step()` runs one iteration of the exchange loop.
+/// Returns `true` when no negative cut values remain.
+pub struct NetworkSimplexState {
+    tree: Graph<TreeNodeLabel, TreeEdgeLabel>,
+    sg: Graph<NodeLabel, EdgeLabel>,
+}
+
+impl NetworkSimplexState {
+    pub fn new(g: &Graph<NodeLabel, EdgeLabel>) -> Self {
+        let mut sg = simplify(g);
+        longest_path(&mut sg);
+        let mut tree = feasible_tree(&mut sg);
+        init_low_lim_values(&mut tree, None);
+        init_cut_values(&mut tree, &sg);
+        Self { tree, sg }
+    }
+
+    /// Run one iteration of the exchange loop. Returns `true` when done.
+    pub fn step(&mut self) -> bool {
+        let leave = match leave_edge(&self.tree) {
+            Some(e) => e,
+            None => return true,
+        };
+        let enter = enter_edge(&self.tree, &self.sg, &leave);
+        exchange_edges(&mut self.tree, &mut self.sg, &leave, &enter);
+        false
+    }
+
+    /// Copy optimized ranks back to the original graph.
+    pub fn apply_ranks(&self, g: &mut Graph<NodeLabel, EdgeLabel>) {
+        for v in g.nodes() {
+            if let Some(sg_label) = self.sg.node(&v)
+                && let Some(label) = g.node_mut(&v)
+            {
+                label.rank = sg_label.rank;
+            }
+        }
+    }
+}
+
 /// Runs the network simplex algorithm to assign optimal ranks to each node.
 ///
 /// Pre-conditions:

@@ -128,6 +128,54 @@ fn find_min_slack_edge(
     best_edge
 }
 
+/// Yieldable state machine for feasible_tree.
+///
+/// Each call to `step()` runs one iteration of the main loop
+/// (`tight_tree` + `find_min_slack_edge` + `shift_ranks`).
+/// Returns `true` when the tree is complete.
+pub(crate) struct FeasibleTreeState {
+    tree: Graph<TreeNodeLabel, TreeEdgeLabel>,
+    size: usize,
+}
+
+impl FeasibleTreeState {
+    pub fn new(g: &Graph<NodeLabel, EdgeLabel>) -> Self {
+        let mut tree = Graph::<TreeNodeLabel, TreeEdgeLabel>::with_options(GraphOptions {
+            directed: false,
+            multigraph: false,
+            compound: false,
+        });
+        let nodes = g.nodes();
+        let size = g.node_count();
+        if let Some(start) = nodes.first() {
+            tree.set_node(start.clone(), Some(TreeNodeLabel::default()));
+        }
+        Self { tree, size }
+    }
+
+    /// Run one iteration. Returns `true` when done.
+    pub fn step(&mut self, g: &mut Graph<NodeLabel, EdgeLabel>) -> bool {
+        if tight_tree(&mut self.tree, g) >= self.size {
+            return true;
+        }
+        let edge = match find_min_slack_edge(&self.tree, g) {
+            Some(e) => e,
+            None => return true,
+        };
+        let delta = if self.tree.has_node(&edge.v) {
+            slack(g, &edge)
+        } else {
+            -slack(g, &edge)
+        };
+        shift_ranks(&self.tree, g, delta);
+        false
+    }
+
+    pub fn into_tree(self) -> Graph<TreeNodeLabel, TreeEdgeLabel> {
+        self.tree
+    }
+}
+
 /// Shifts ranks of all tree nodes by delta.
 ///
 /// Tree nodes are produced by `feasible_tree`, which only adds nodes

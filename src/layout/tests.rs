@@ -237,7 +237,7 @@ fn position_assigns_coordinates() {
     g.node_mut("b").unwrap().rank = Some(1);
     g.node_mut("b").unwrap().order = Some(0);
 
-    position::position(&mut g);
+    position::position(&mut g, None);
 
     assert!(g.node("a").unwrap().x.is_some());
     assert!(g.node("a").unwrap().y.is_some());
@@ -257,7 +257,7 @@ fn position_y_increases_with_rank() {
     g.node_mut("b").unwrap().rank = Some(1);
     g.node_mut("b").unwrap().order = Some(0);
 
-    position::position(&mut g);
+    position::position(&mut g, None);
 
     let ya = g.node("a").unwrap().y.unwrap();
     let yb = g.node("b").unwrap().y.unwrap();
@@ -1545,7 +1545,7 @@ fn position_two_nodes_same_rank_have_different_x() {
     g.node_mut("b").unwrap().rank = Some(0);
     g.node_mut("b").unwrap().order = Some(1);
 
-    position::position(&mut g);
+    position::position(&mut g, None);
 
     let xa = g.node("a").unwrap().x.unwrap();
     let xb = g.node("b").unwrap().x.unwrap();
@@ -1568,7 +1568,7 @@ fn position_three_ranks_y_ordering() {
     g.node_mut("c").unwrap().rank = Some(2);
     g.node_mut("c").unwrap().order = Some(0);
 
-    position::position(&mut g);
+    position::position(&mut g, None);
 
     let ya = g.node("a").unwrap().y.unwrap();
     let yb = g.node("b").unwrap().y.unwrap();

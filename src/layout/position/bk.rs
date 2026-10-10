@@ -38,15 +38,133 @@ pub(crate) struct AlignmentResult {
 type XssMap = BTreeMap<String, PositionMap>;
 
 // ---------------------------------------------------------------------------
+// Yieldable state machine for position_x
+// ---------------------------------------------------------------------------
+
+/// Yieldable state machine for the BK 4-direction sweep loop.
+///
+/// `new()` computes the layering and conflict sets once.
+/// Each call to `step()` runs one directional sweep (ul, ur, dl, dr).
+/// Returns `true` when all 4 sweeps plus alignment/balance are done.
+pub struct PositionState {
+    layering: Vec<Vec<String>>,
+    conflicts: Conflicts,
+    xss: XssMap,
+    sweep_index: usize,
+    done: bool,
+}
+
+impl PositionState {
+    pub fn new(g: &Graph<NodeLabel, EdgeLabel>, layering: Option<&[Vec<String>]>) -> Self {
+        let layering_owned: Vec<Vec<String>> = match layering {
+            Some(l) => l.to_vec(),
+            None => build_layer_matrix(g),
+        };
+        let mut conflicts = find_type1_conflicts(g, &layering_owned);
+        let type2 = find_type2_conflicts(g, &layering_owned);
+        for (k, inner) in type2 {
+            let entry = conflicts.entry(k).or_default();
+            for (k2, v2) in inner {
+                entry.insert(k2, v2);
+            }
+        }
+        Self {
+            layering: layering_owned,
+            conflicts,
+            xss: BTreeMap::new(),
+            sweep_index: 0,
+            done: false,
+        }
+    }
+
+    /// Run one directional sweep. Returns `true` when all sweeps are done.
+    pub fn step(&mut self, g: &Graph<NodeLabel, EdgeLabel>) -> bool {
+        if self.done {
+            return true;
+        }
+
+        let dirs: [(&str, &str); 4] = [("u", "l"), ("u", "r"), ("d", "l"), ("d", "r")];
+        if self.sweep_index < dirs.len() {
+            let (vert, horiz) = dirs[self.sweep_index];
+
+            let reversed_layers = vert == "d";
+            let reversed_nodes = horiz == "r";
+
+            let neighbor_fn: NeighborFn<'_> = if vert == "u" {
+                Box::new(|v: &str| g.predecessors(v).unwrap_or_default())
+            } else {
+                Box::new(|v: &str| g.successors(v).unwrap_or_default())
+            };
+
+            let alignment = vertical_alignment(
+                g,
+                &self.layering,
+                &self.conflicts,
+                &*neighbor_fn,
+                reversed_layers,
+                reversed_nodes,
+            );
+            let mut xs = horizontal_compaction(
+                g,
+                &self.layering,
+                &alignment.root,
+                &alignment.align,
+                horiz == "r",
+                reversed_layers,
+                reversed_nodes,
+            );
+
+            if horiz == "r" {
+                for val in xs.values_mut() {
+                    *val = -*val;
+                }
+            }
+
+            let key = format!("{}{}", vert, horiz);
+            trace!("BK alignment {}: {} nodes", key, xs.len());
+            self.xss.insert(key, xs);
+
+            self.sweep_index += 1;
+            return false;
+        }
+
+        // All 4 sweeps done — finalize
+        let (smallest_key, smallest) = find_smallest_width_alignment(g, &self.xss);
+        align_coordinates(&mut self.xss, &smallest_key, &smallest);
+
+        let graph_label = graph_label(g);
+        let align_opt = graph_label.and_then(|gl| gl.align);
+        let result = balance(&self.xss, align_opt);
+
+        // Replace xss with a single-entry map containing the final result
+        self.xss = BTreeMap::new();
+        self.xss.insert("result".to_string(), result);
+        self.done = true;
+        true
+    }
+
+    /// Extract final x-coordinates. Must be called after `step()` returns `true`.
+    pub fn result(&self) -> &PositionMap {
+        self.xss.get("result").unwrap()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public entry
 // ---------------------------------------------------------------------------
 
 /// Main entry: compute x-coordinates for every node using the BK algorithm.
-pub(crate) fn position_x(g: &Graph<NodeLabel, EdgeLabel>) -> PositionMap {
-    let layering = build_layer_matrix(g);
-    let mut conflicts = find_type1_conflicts(g, &layering);
+pub(crate) fn position_x(
+    g: &Graph<NodeLabel, EdgeLabel>,
+    layering: Option<&[Vec<String>]>,
+) -> PositionMap {
+    let layering_owned: Vec<Vec<String>> = match layering {
+        Some(l) => l.to_vec(),
+        None => build_layer_matrix(g),
+    };
+    let mut conflicts = find_type1_conflicts(g, &layering_owned);
     // Merge type-2 conflicts into the same map.
-    let type2 = find_type2_conflicts(g, &layering);
+    let type2 = find_type2_conflicts(g, &layering_owned);
     for (k, inner) in type2 {
         let entry = conflicts.entry(k).or_default();
         for (k2, v2) in inner {
@@ -57,21 +175,9 @@ pub(crate) fn position_x(g: &Graph<NodeLabel, EdgeLabel>) -> PositionMap {
     let mut xss: XssMap = BTreeMap::new();
 
     for vert in &["u", "d"] {
-        let adjusted_base: Vec<Vec<String>> = if *vert == "u" {
-            layering.clone()
-        } else {
-            layering.iter().rev().cloned().collect()
-        };
-
         for horiz in &["l", "r"] {
-            let adjusted: Vec<Vec<String>> = if *horiz == "r" {
-                adjusted_base
-                    .iter()
-                    .map(|layer| layer.iter().rev().cloned().collect())
-                    .collect()
-            } else {
-                adjusted_base.clone()
-            };
+            let reversed_layers = *vert == "d";
+            let reversed_nodes = *horiz == "r";
 
             let neighbor_fn: NeighborFn<'_> = if *vert == "u" {
                 Box::new(|v: &str| g.predecessors(v).unwrap_or_default())
@@ -79,13 +185,22 @@ pub(crate) fn position_x(g: &Graph<NodeLabel, EdgeLabel>) -> PositionMap {
                 Box::new(|v: &str| g.successors(v).unwrap_or_default())
             };
 
-            let alignment = vertical_alignment(g, &adjusted, &conflicts, &*neighbor_fn);
+            let alignment = vertical_alignment(
+                g,
+                &layering_owned,
+                &conflicts,
+                &*neighbor_fn,
+                reversed_layers,
+                reversed_nodes,
+            );
             let mut xs = horizontal_compaction(
                 g,
-                &adjusted,
+                &layering_owned,
                 &alignment.root,
                 &alignment.align,
                 *horiz == "r",
+                reversed_layers,
+                reversed_nodes,
             );
 
             if *horiz == "r" {
@@ -294,6 +409,32 @@ pub(crate) fn has_conflict(conflicts: &Conflicts, v: &str, w: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Directional iteration helpers
+// ---------------------------------------------------------------------------
+
+fn iter_layers<'a>(
+    layering: &'a [Vec<String>],
+    reversed: bool,
+) -> Box<dyn Iterator<Item = &'a Vec<String>> + 'a> {
+    if reversed {
+        Box::new(layering.iter().rev())
+    } else {
+        Box::new(layering.iter())
+    }
+}
+
+fn iter_nodes<'a>(
+    layer: &'a [String],
+    reversed: bool,
+) -> Box<dyn Iterator<Item = &'a String> + 'a> {
+    if reversed {
+        Box::new(layer.iter().rev())
+    } else {
+        Box::new(layer.iter())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Vertical alignment
 // ---------------------------------------------------------------------------
 
@@ -305,6 +446,8 @@ pub(crate) fn vertical_alignment(
     layering: &[Vec<String>],
     conflicts: &Conflicts,
     neighbor_fn: &dyn Fn(&str) -> Vec<String>,
+    reversed_layers: bool,
+    reversed_nodes: bool,
 ) -> AlignmentResult {
     let mut root: BTreeMap<String, String> = BTreeMap::new();
     let mut align: BTreeMap<String, String> = BTreeMap::new();
@@ -312,17 +455,17 @@ pub(crate) fn vertical_alignment(
 
     // Cache positions from layering order (may differ from node.order when
     // the layering has been reversed for a particular sweep direction).
-    for layer in layering {
-        for (order, v) in layer.iter().enumerate() {
+    for layer in iter_layers(layering, reversed_layers) {
+        for (order, v) in iter_nodes(layer, reversed_nodes).enumerate() {
             root.insert(v.clone(), v.clone());
             align.insert(v.clone(), v.clone());
             pos.insert(v.clone(), order);
         }
     }
 
-    for layer in layering {
+    for layer in iter_layers(layering, reversed_layers) {
         let mut prev_idx: isize = -1;
-        for v in layer {
+        for v in iter_nodes(layer, reversed_nodes) {
             let ws_raw = neighbor_fn(v);
             if ws_raw.is_empty() {
                 continue;
@@ -377,9 +520,11 @@ pub(crate) fn horizontal_compaction(
     root: &BTreeMap<String, String>,
     align: &BTreeMap<String, String>,
     reverse_sep: bool,
+    reversed_layers: bool,
+    reversed_nodes: bool,
 ) -> PositionMap {
     let mut xs: PositionMap = BTreeMap::new();
-    let block_g = build_block_graph(g, layering, root, reverse_sep);
+    let block_g = build_block_graph(g, layering, root, reverse_sep, reversed_layers, reversed_nodes);
     let border_type = if reverse_sep {
         BorderType::Left
     } else {
@@ -489,15 +634,17 @@ fn build_block_graph(
     layering: &[Vec<String>],
     root: &BTreeMap<String, String>,
     reverse_sep: bool,
+    reversed_layers: bool,
+    reversed_nodes: bool,
 ) -> Graph<(), f64> {
     let mut block_g: Graph<(), f64> = Graph::new();
     let gl = graph_label(g);
     let nodesep = gl.map_or(50.0, |l| l.nodesep);
     let edgesep = gl.map_or(20.0, |l| l.edgesep);
 
-    for layer in layering {
+    for layer in iter_layers(layering, reversed_layers) {
         let mut u: Option<&String> = None;
-        for v in layer {
+        for v in iter_nodes(layer, reversed_nodes) {
             if let Some(v_root) = root.get(v) {
                 block_g.set_node(v_root.clone(), None);
                 if let Some(u_id) = u
@@ -995,7 +1142,7 @@ mod tests {
 
         let result = vertical_alignment(&g, &layering, &conflicts, &|v: &str| {
             g.predecessors(v).unwrap_or_default()
-        });
+        }, false, false);
         assert_eq!(result.root.get("a").unwrap(), "a");
         assert_eq!(result.root.get("b").unwrap(), "b");
         assert_eq!(result.align.get("a").unwrap(), "a");
@@ -1014,7 +1161,7 @@ mod tests {
 
         let result = vertical_alignment(&g, &layering, &conflicts, &|v: &str| {
             g.predecessors(v).unwrap_or_default()
-        });
+        }, false, false);
         assert_eq!(result.root.get("a").unwrap(), "a");
         assert_eq!(result.root.get("b").unwrap(), "a");
         assert_eq!(result.align.get("a").unwrap(), "b");
@@ -1035,7 +1182,7 @@ mod tests {
 
         let result = vertical_alignment(&g, &layering, &conflicts, &|v: &str| {
             g.predecessors(v).unwrap_or_default()
-        });
+        }, false, false);
         assert_eq!(result.root.get("a").unwrap(), "a");
         assert_eq!(result.root.get("b").unwrap(), "b");
         assert_eq!(result.root.get("c").unwrap(), "a");
@@ -1059,7 +1206,7 @@ mod tests {
 
         let result = vertical_alignment(&g, &layering, &conflicts, &|v: &str| {
             g.predecessors(v).unwrap_or_default()
-        });
+        }, false, false);
         assert_eq!(result.root.get("z").unwrap(), "z");
         assert_eq!(result.root.get("b").unwrap(), "b");
         assert_eq!(result.root.get("c").unwrap(), "z");
@@ -1083,7 +1230,7 @@ mod tests {
 
         let result = vertical_alignment(&g, &layering, &conflicts, &|v: &str| {
             g.predecessors(v).unwrap_or_default()
-        });
+        }, false, false);
         assert_eq!(result.root.get("a").unwrap(), "a");
         assert_eq!(result.root.get("b").unwrap(), "b");
         assert_eq!(result.root.get("c").unwrap(), "b");
@@ -1108,7 +1255,7 @@ mod tests {
 
         let result = vertical_alignment(&g, &layering, &conflicts, &|v: &str| {
             g.predecessors(v).unwrap_or_default()
-        });
+        }, false, false);
         assert_eq!(result.root.get("a").unwrap(), "a");
         assert_eq!(result.root.get("b").unwrap(), "b");
         assert_eq!(result.root.get("c").unwrap(), "b");
@@ -1135,7 +1282,7 @@ mod tests {
 
         let result = vertical_alignment(&g, &layering, &conflicts, &|v: &str| {
             g.predecessors(v).unwrap_or_default()
-        });
+        }, false, false);
         assert_eq!(result.root.get("a").unwrap(), "a");
         assert_eq!(result.root.get("b").unwrap(), "b");
         assert_eq!(result.root.get("c").unwrap(), "c");
@@ -1162,7 +1309,7 @@ mod tests {
 
         let result = vertical_alignment(&g, &layering, &conflicts, &|v: &str| {
             g.predecessors(v).unwrap_or_default()
-        });
+        }, false, false);
         assert_eq!(result.root.get("a").unwrap(), "a");
         assert_eq!(result.root.get("b").unwrap(), "a");
         assert_eq!(result.root.get("c").unwrap(), "c");
@@ -1184,7 +1331,7 @@ mod tests {
         let root = BTreeMap::from([("a".to_string(), "a".to_string())]);
         let align = BTreeMap::from([("a".to_string(), "a".to_string())]);
         let layering = build_layer_matrix(&g);
-        let xs = horizontal_compaction(&g, &layering, &root, &align, false);
+        let xs = horizontal_compaction(&g, &layering, &root, &align, false, false, false);
         assert_eq!(xs["a"], 0.0);
     }
 
@@ -1203,7 +1350,7 @@ mod tests {
             ("b".to_string(), "b".to_string()),
         ]);
         let layering = build_layer_matrix(&g);
-        let xs = horizontal_compaction(&g, &layering, &root, &align, false);
+        let xs = horizontal_compaction(&g, &layering, &root, &align, false, false, false);
         assert_eq!(xs["a"], 0.0);
         assert_eq!(xs["b"], 100.0 / 2.0 + 100.0 + 200.0 / 2.0);
     }
@@ -1223,7 +1370,7 @@ mod tests {
             ("b".to_string(), "b".to_string()),
         ]);
         let layering = build_layer_matrix(&g);
-        let xs = horizontal_compaction(&g, &layering, &root, &align, false);
+        let xs = horizontal_compaction(&g, &layering, &root, &align, false, false, false);
         assert_eq!(xs["a"], 0.0);
         assert_eq!(xs["b"], 100.0 / 2.0 + 20.0 + 200.0 / 2.0);
     }
@@ -1242,7 +1389,7 @@ mod tests {
             ("b".to_string(), "a".to_string()),
         ]);
         let layering = build_layer_matrix(&g);
-        let xs = horizontal_compaction(&g, &layering, &root, &align, false);
+        let xs = horizontal_compaction(&g, &layering, &root, &align, false, false, false);
         assert_eq!(xs["a"], 0.0);
         assert_eq!(xs["b"], 0.0);
     }
@@ -1265,7 +1412,7 @@ mod tests {
             ("c".to_string(), "c".to_string()),
         ]);
         let layering = build_layer_matrix(&g);
-        let xs = horizontal_compaction(&g, &layering, &root, &align, false);
+        let xs = horizontal_compaction(&g, &layering, &root, &align, false, false, false);
         assert_eq!(xs["a"], 50.0 / 2.0 + 75.0 + 200.0 / 2.0);
         assert_eq!(xs["b"], 50.0 / 2.0 + 75.0 + 200.0 / 2.0);
         assert_eq!(xs["c"], 0.0);
@@ -1292,7 +1439,7 @@ mod tests {
             ("d".to_string(), "b".to_string()),
         ]);
         let layering = build_layer_matrix(&g);
-        let xs = horizontal_compaction(&g, &layering, &root, &align, false);
+        let xs = horizontal_compaction(&g, &layering, &root, &align, false, false, false);
         assert_eq!(xs["a"], 0.0);
         assert_eq!(xs["b"], 100.0 / 2.0 + 75.0 + 200.0 / 2.0);
         assert_eq!(
@@ -1323,7 +1470,7 @@ mod tests {
             ("d".to_string(), "b".to_string()),
         ]);
         let layering = build_layer_matrix(&g);
-        let xs = horizontal_compaction(&g, &layering, &root, &align, false);
+        let xs = horizontal_compaction(&g, &layering, &root, &align, false, false, false);
         assert_eq!(xs["a"], 0.0);
         assert_eq!(xs["b"], 50.0 / 2.0 + 75.0 + 150.0 / 2.0);
         assert_eq!(xs["c"], 0.0);
@@ -1351,7 +1498,7 @@ mod tests {
             ("d".to_string(), "b".to_string()),
         ]);
         let layering = build_layer_matrix(&g);
-        let xs = horizontal_compaction(&g, &layering, &root, &align, false);
+        let xs = horizontal_compaction(&g, &layering, &root, &align, false, false, false);
         assert_eq!(xs["a"], 0.0);
         assert_eq!(xs["b"], 60.0 / 2.0 + 75.0 + 150.0 / 2.0);
         assert_eq!(xs["c"], 0.0);
@@ -1388,7 +1535,7 @@ mod tests {
             ("g".to_string(), "d".to_string()),
         ]);
         let layering = build_layer_matrix(&g);
-        let xs = horizontal_compaction(&g, &layering, &root, &align, false);
+        let xs = horizontal_compaction(&g, &layering, &root, &align, false, false, false);
         // Use f as reference, everything is relative
         assert_eq!(xs["a"], xs["b"] - 50.0 / 2.0 - 75.0 - 50.0 / 2.0);
         assert_eq!(xs["b"], xs["e"]);
@@ -1419,7 +1566,7 @@ mod tests {
             ("c".to_string(), "c".to_string()),
         ]);
         let layering = build_layer_matrix(&g);
-        let xs = horizontal_compaction(&g, &layering, &root, &align, false);
+        let xs = horizontal_compaction(&g, &layering, &root, &align, false, false, false);
         assert_eq!(xs["a"], 0.0);
         assert_eq!(xs["b"], xs["a"] + 100.0 / 2.0 + 50.0 + 200.0);
         assert_eq!(xs["c"], xs["b"] + 0.0 + 50.0 + 300.0 / 2.0);
@@ -1446,7 +1593,7 @@ mod tests {
             ("c".to_string(), "c".to_string()),
         ]);
         let layering = build_layer_matrix(&g);
-        let xs = horizontal_compaction(&g, &layering, &root, &align, false);
+        let xs = horizontal_compaction(&g, &layering, &root, &align, false, false, false);
         assert_eq!(xs["a"], 0.0);
         assert_eq!(xs["b"], xs["a"] + 100.0 / 2.0 + 50.0 + 200.0 / 2.0);
         assert_eq!(xs["c"], xs["b"] + 200.0 / 2.0 + 50.0 + 300.0 / 2.0);
@@ -1473,7 +1620,7 @@ mod tests {
             ("c".to_string(), "c".to_string()),
         ]);
         let layering = build_layer_matrix(&g);
-        let xs = horizontal_compaction(&g, &layering, &root, &align, false);
+        let xs = horizontal_compaction(&g, &layering, &root, &align, false, false, false);
         assert_eq!(xs["a"], 0.0);
         assert_eq!(xs["b"], xs["a"] + 100.0 / 2.0 + 50.0 + 0.0);
         assert_eq!(xs["c"], xs["b"] + 200.0 + 50.0 + 300.0 / 2.0);
@@ -1701,7 +1848,7 @@ mod tests {
     fn px_single_node_at_origin() {
         let mut g = new_graph();
         g.set_node("a".to_string(), Some(node_w(0, 0, 100.0)));
-        let result = position_x(&g);
+        let result = position_x(&g, None);
         assert_eq!(result["a"], 0.0);
     }
 
@@ -1712,7 +1859,7 @@ mod tests {
         g.set_node("a".to_string(), Some(node_w(0, 0, 100.0)));
         g.set_node("b".to_string(), Some(node_w(1, 0, 100.0)));
         g.set_edge("a", "b", None, None);
-        let result = position_x(&g);
+        let result = position_x(&g, None);
         assert_eq!(result["a"], 0.0);
         assert_eq!(result["b"], 0.0);
     }
@@ -1725,7 +1872,7 @@ mod tests {
         g.set_node("b".to_string(), Some(node_w(1, 0, 500.0)));
         g.set_node("c".to_string(), Some(node_w(2, 0, 20.0)));
         g.set_path(&["a", "b", "c"], None);
-        let result = position_x(&g);
+        let result = position_x(&g, None);
         assert_eq!(result["a"], 0.0);
         assert_eq!(result["b"], 0.0);
         assert_eq!(result["c"], 0.0);
@@ -1742,7 +1889,7 @@ mod tests {
         g.set_edge("a", "b", None, None);
         g.set_edge("a", "c", None, None);
 
-        let pos = position_x(&g);
+        let pos = position_x(&g, None);
         let a = pos["a"];
         assert_eq!(pos["b"], a - (25.0 + 5.0));
         assert_eq!(pos["c"], a + (25.0 + 5.0));
@@ -1759,7 +1906,7 @@ mod tests {
         g.set_node("d".to_string(), Some(node_w(1, 1, 80.0)));
         g.set_edge("b", "c", None, None);
 
-        let pos = position_x(&g);
+        let pos = position_x(&g, None);
         let b = pos["b"];
         let c = b;
         assert_eq!(pos["a"], b - 60.0 / 2.0 - 10.0 - 50.0 / 2.0);
@@ -1781,7 +1928,7 @@ mod tests {
         g.set_edge("b", "c", None, None);
         g.set_edge("a", "d", None, None);
 
-        let pos = position_x(&g);
+        let pos = position_x(&g, None);
         let a = pos["a"];
         let d = a;
         assert_eq!(pos["a"], a);

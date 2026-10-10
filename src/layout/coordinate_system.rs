@@ -7,7 +7,7 @@ use crate::graph::Graph;
 
 /// Before positioning: if rankdir is LR or RL, swap width <-> height
 /// for all nodes and edges so the algorithm can work in TB mode.
-pub(crate) fn adjust(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn adjust(g: &mut Graph<NodeLabel, EdgeLabel>) {
     let rankdir = g
         .graph_label::<GraphLabel>()
         .map_or(RankDir::TB, |gl| gl.rankdir);
@@ -23,7 +23,7 @@ pub(crate) fn adjust(g: &mut Graph<NodeLabel, EdgeLabel>) {
 /// - BT: negate y coords
 /// - RL: negate y coords, then swap x<->y and width<->height
 /// - LR: swap x<->y and width<->height
-pub(crate) fn undo(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn undo(g: &mut Graph<NodeLabel, EdgeLabel>) {
     let rankdir = g
         .graph_label::<GraphLabel>()
         .map_or(RankDir::TB, |gl| gl.rankdir);

@@ -10,7 +10,7 @@ use super::util::add_border_node;
 use crate::graph::Graph;
 
 /// Add border segments (left/right border node chains) for each compound node.
-pub(crate) fn add_border_segments(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn add_border_segments(g: &mut Graph<NodeLabel, EdgeLabel>) {
     // Collect compound nodes that have min_rank set (i.e., subgraph nodes)
     let subgraph_nodes: Vec<(String, i32, i32)> = g
         .nodes()

@@ -13,9 +13,9 @@ use crate::layout::util::build_layer_matrix;
 /// Assign final (x, y) coordinates to every node in the graph.
 ///
 /// Assumes that each node already has `rank` and `order` set.
-pub(crate) fn position(g: &mut Graph<NodeLabel, EdgeLabel>) {
-    position_y(g);
-    position_x(g);
+pub fn position(g: &mut Graph<NodeLabel, EdgeLabel>, layering: Option<&[Vec<String>]>) {
+    position_y(g, layering);
+    position_x(g, layering);
 }
 
 /// Assign y-coordinates based on ranks.
@@ -23,8 +23,15 @@ pub(crate) fn position(g: &mut Graph<NodeLabel, EdgeLabel>) {
 /// Walks through the layer matrix rank by rank, accumulating vertical offset
 /// from the tallest node in each preceding rank plus the configured ranksep.
 /// Supports top / center / bottom alignment within each rank.
-fn position_y(g: &mut Graph<NodeLabel, EdgeLabel>) {
-    let layering = build_layer_matrix(g);
+pub fn position_y(g: &mut Graph<NodeLabel, EdgeLabel>, layering: Option<&[Vec<String>]>) {
+    let owned;
+    let layering_ref: &[Vec<String>] = match layering {
+        Some(l) => l,
+        None => {
+            owned = build_layer_matrix(g);
+            &owned
+        }
+    };
 
     let graph_label = g.graph_label::<GraphLabel>();
     let ranksep = graph_label.map_or(50.0, |gl| gl.ranksep);
@@ -32,7 +39,7 @@ fn position_y(g: &mut Graph<NodeLabel, EdgeLabel>) {
 
     let mut prev_y: f64 = 0.0;
 
-    for layer in &layering {
+    for layer in layering_ref {
         // Find the maximum height among all nodes in this layer.
         let max_height = layer
             .iter()
@@ -64,8 +71,8 @@ fn position_y(g: &mut Graph<NodeLabel, EdgeLabel>) {
 }
 
 /// Assign x coordinates using the Brandes-Köpf algorithm.
-fn position_x(g: &mut Graph<NodeLabel, EdgeLabel>) {
-    let xs = bk::position_x(g);
+fn position_x(g: &mut Graph<NodeLabel, EdgeLabel>, layering: Option<&[Vec<String>]>) {
+    let xs = bk::position_x(g, layering);
     for (v, x) in xs {
         if let Some(node) = g.node_mut(&v) {
             node.x = Some(x);

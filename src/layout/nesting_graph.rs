@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 /// Run nesting graph transformation.
 /// dagre.js calls this for ALL graphs (not just compound) to ensure the graph
 /// is connected and nodeRankFactor is set.
-pub(crate) fn run(g: &mut Graph<NodeLabel, EdgeLabel>) -> Option<String> {
+pub fn run(g: &mut Graph<NodeLabel, EdgeLabel>) -> Option<String> {
     let root = add_dummy_node(g, "root", NodeLabel::default(), "_root");
     let depths = tree_depths(g);
     let height = depths.values().copied().max().unwrap_or(1) - 1;
@@ -169,7 +169,7 @@ fn tree_depths(g: &Graph<NodeLabel, EdgeLabel>) -> BTreeMap<String, usize> {
 }
 
 /// Clean up nesting graph artifacts.
-pub(crate) fn cleanup(g: &mut Graph<NodeLabel, EdgeLabel>, nesting_root: &str) {
+pub fn cleanup(g: &mut Graph<NodeLabel, EdgeLabel>, nesting_root: &str) {
     g.remove_node(nesting_root);
 
     // Remove nesting edges

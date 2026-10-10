@@ -31,7 +31,17 @@ use types::*;
 /// Each edge will have `points` set with the waypoints.
 pub fn layout(g: &mut Graph<NodeLabel, EdgeLabel>, opts: Option<LayoutOptions>) {
     let opts = opts.unwrap_or_default();
+    layout_phase1(g, &opts);
+    layout_phase2(g);
+    layout_phase3(g);
+}
 
+/// Phase 1: graph setup, cycle removal, rank assignment, normalization.
+///
+/// After this call every node has a `rank`, dummy nodes for long edges are
+/// inserted, and the graph is normalized (ranks start at 0, no empty ranks).
+/// No coordinates yet.
+pub fn layout_phase1(g: &mut Graph<NodeLabel, EdgeLabel>, opts: &LayoutOptions) {
     // Store options into a GraphLabel and set it as the graph label
     let gl = GraphLabel {
         rankdir: opts.rankdir,
@@ -128,18 +138,30 @@ pub fn layout(g: &mut Graph<NodeLabel, EdgeLabel>, opts: Option<LayoutOptions>) 
     if compound {
         add_border_segments::add_border_segments(g);
     }
+}
 
+/// Phase 2: ordering (minimize crossings) and coordinate system adjustment.
+///
+/// After this call every node has `rank` + `order`. Crude positions can be
+/// computed from rank/order. For LR/RL rankdirs, width/height are swapped.
+pub fn layout_phase2(g: &mut Graph<NodeLabel, EdgeLabel>) {
     // 15. Order (minimize crossings)
     order::order(g);
 
     // 16. Insert self edges
-    insert_self_edges(g);
+    insert_self_edges(g, None);
 
     // 17. Coordinate system adjust
     coordinate_system::adjust(g);
+}
 
+/// Phase 3: coordinate assignment and all cleanup/denormalization.
+///
+/// After this call every node has final `(x, y)` coordinates, edge waypoints
+/// are computed, and the graph is fully restored (no dummy nodes remain).
+pub fn layout_phase3(g: &mut Graph<NodeLabel, EdgeLabel>) {
     // 18. Position (assign coordinates)
-    position::position(g);
+    position::position(g, None);
 
     // 19. Position self edges
     position_self_edges(g);
@@ -166,17 +188,7 @@ pub fn layout(g: &mut Graph<NodeLabel, EdgeLabel>, opts: Option<LayoutOptions>) 
     // 25. Assign node intersects
     assign_node_intersects(g);
 
-    // 25b. Drop adjacent duplicate vertices in edge paths. The assembly
-    // sequence (intersect → dummy-chain points → intersect) sometimes
-    // produces two consecutive points that coincide within float
-    // tolerance — most often when the source/target intersection lands
-    // exactly on the first/last dummy-chain point, or when two dummy
-    // nodes on the same edge sit at identical (x, y). Renderers turn
-    // those into zero-length SVG line segments which downstream byte-
-    // exact tests treat as a diff. Mirrors `dagre.js` behavior in
-    // practice — dagre.js itself does not produce the duplicates as
-    // often because of how it walks dummy chains; the dedupe is cheap
-    // and safe either way.
+    // 25b. Drop adjacent duplicate vertices in edge paths.
     dedupe_adjacent_edge_points(g);
 
     // 26. Reverse points for reversed edges
@@ -193,7 +205,7 @@ pub fn layout(g: &mut Graph<NodeLabel, EdgeLabel>, opts: Option<LayoutOptions>) 
 /// Halve ranksep in graph label. For each edge: double minlen.
 /// If labelpos != Center and rankdir is TB/BT, add labeloffset to edge width;
 /// if LR/RL, add to height.
-fn make_space_for_edge_labels(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn make_space_for_edge_labels(g: &mut Graph<NodeLabel, EdgeLabel>) {
     let (rankdir, ranksep) = {
         let gl = g.graph_label::<GraphLabel>();
         (
@@ -227,7 +239,7 @@ fn make_space_for_edge_labels(g: &mut Graph<NodeLabel, EdgeLabel>) {
 
 /// For edges where v==w, save {edge, label} onto the node's self_edges Vec,
 /// then remove edge.
-fn remove_self_edges(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn remove_self_edges(g: &mut Graph<NodeLabel, EdgeLabel>) {
     let self_edges: Vec<(Edge, EdgeLabel)> = g
         .edges()
         .into_iter()
@@ -252,10 +264,17 @@ fn remove_self_edges(g: &mut Graph<NodeLabel, EdgeLabel>) {
 
 /// After ordering, re-insert self edges as dummy nodes with type "selfedge"
 /// using add_dummy_node.
-fn insert_self_edges(g: &mut Graph<NodeLabel, EdgeLabel>) {
-    let layers = util::build_layer_matrix(g);
+pub fn insert_self_edges(g: &mut Graph<NodeLabel, EdgeLabel>, layering: Option<&[Vec<String>]>) {
+    let owned;
+    let layers: &[Vec<String>] = match layering {
+        Some(l) => l,
+        None => {
+            owned = util::build_layer_matrix(g);
+            &owned
+        }
+    };
 
-    for layer in &layers {
+    for layer in layers {
         let mut order_shift = 0usize;
         for (i, v) in layer.iter().enumerate() {
             if v.is_empty() {
@@ -295,7 +314,7 @@ fn insert_self_edges(g: &mut Graph<NodeLabel, EdgeLabel>) {
 /// `remove_empty_ranks` doesn't collapse it. After `normalize_ranks`,
 /// `remove_edge_label_proxies` reads the (possibly shifted) rank back and
 /// stores it as `label_rank` on the edge.
-fn inject_edge_label_proxies(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn inject_edge_label_proxies(g: &mut Graph<NodeLabel, EdgeLabel>) {
     let edges: Vec<Edge> = g.edges();
 
     for e in edges {
@@ -334,7 +353,7 @@ fn inject_edge_label_proxies(g: &mut Graph<NodeLabel, EdgeLabel>) {
 }
 
 /// Remove "edge-proxy" dummy nodes, setting label_rank on the associated edge.
-fn remove_edge_label_proxies(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn remove_edge_label_proxies(g: &mut Graph<NodeLabel, EdgeLabel>) {
     let proxy_nodes: Vec<String> = g
         .nodes()
         .into_iter()
@@ -360,7 +379,7 @@ fn remove_edge_label_proxies(g: &mut Graph<NodeLabel, EdgeLabel>) {
 
 /// For nodes with border_top set, set min_rank = rank of border_top node,
 /// max_rank = rank of border_bottom node.
-fn assign_rank_min_max(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn assign_rank_min_max(g: &mut Graph<NodeLabel, EdgeLabel>) {
     // Collect the data first to avoid borrow conflicts
     let assignments: Vec<(String, i32, i32)> = g
         .nodes()
@@ -385,7 +404,7 @@ fn assign_rank_min_max(g: &mut Graph<NodeLabel, EdgeLabel>) {
 
 /// Find bounding box of all nodes and edge labels, shift everything so
 /// min coords = margin, set graph width/height.
-fn translate_graph(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn translate_graph(g: &mut Graph<NodeLabel, EdgeLabel>) {
     let (marginx, marginy) = g
         .graph_label::<GraphLabel>()
         .map_or((0.0, 0.0), |gl| (gl.marginx, gl.marginy));
@@ -470,7 +489,7 @@ fn translate_graph(g: &mut Graph<NodeLabel, EdgeLabel>) {
 
 /// For each edge, compute intersection of edge path with source and target node
 /// boundaries using intersect_rect. Prepend/append these points.
-fn assign_node_intersects(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn assign_node_intersects(g: &mut Graph<NodeLabel, EdgeLabel>) {
     for e in g.edges() {
         // Get source and target node labels
         let v_node = g.node(&e.v).cloned();
@@ -514,7 +533,7 @@ fn assign_node_intersects(g: &mut Graph<NodeLabel, EdgeLabel>) {
 }
 
 /// For edges with x set, adjust x based on labelpos (l/r) and labeloffset.
-fn fixup_edge_label_coords(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn fixup_edge_label_coords(g: &mut Graph<NodeLabel, EdgeLabel>) {
     for e in g.edges() {
         if let Some(label) = g.edge_mut(&e.v, &e.w, e.name.as_deref())
             && label.x.is_some()
@@ -543,7 +562,7 @@ fn fixup_edge_label_coords(g: &mut Graph<NodeLabel, EdgeLabel>) {
 /// in-place on every edge's `points` Vec. Preserves the first occurrence.
 const DEDUPE_EPSILON: f64 = 1e-4;
 
-fn dedupe_adjacent_edge_points(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn dedupe_adjacent_edge_points(g: &mut Graph<NodeLabel, EdgeLabel>) {
     let edges = g.edges();
     for e in edges {
         if let Some(label) = g.edge_mut(&e.v, &e.w, e.name.as_deref()) {
@@ -558,7 +577,7 @@ fn dedupe_adjacent_edge_points(g: &mut Graph<NodeLabel, EdgeLabel>) {
 }
 
 /// For edges with reversed=true, reverse the points array.
-fn reverse_points_for_reversed_edges(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn reverse_points_for_reversed_edges(g: &mut Graph<NodeLabel, EdgeLabel>) {
     for e in g.edges() {
         if let Some(label) = g.edge_mut(&e.v, &e.w, e.name.as_deref())
             && label.reversed
@@ -570,7 +589,7 @@ fn reverse_points_for_reversed_edges(g: &mut Graph<NodeLabel, EdgeLabel>) {
 
 /// For container nodes, compute width/height/x/y from border nodes.
 /// Then remove all "border" dummy nodes.
-fn remove_border_nodes(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn remove_border_nodes(g: &mut Graph<NodeLabel, EdgeLabel>) {
     // First compute container node dimensions from border nodes. Mirror
     // dagre.js v0.8.5 removeBorderNodes:
     //
@@ -651,7 +670,7 @@ fn remove_border_nodes(g: &mut Graph<NodeLabel, EdgeLabel>) {
 }
 
 /// For "selfedge" dummy nodes, create curved path points and set on the edge label.
-fn position_self_edges(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn position_self_edges(g: &mut Graph<NodeLabel, EdgeLabel>) {
     let self_edge_nodes: Vec<String> = g
         .nodes()
         .into_iter()

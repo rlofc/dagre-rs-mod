@@ -53,7 +53,7 @@ pub(crate) fn simplify(g: &Graph<NodeLabel, EdgeLabel>) -> Graph<NodeLabel, Edge
 }
 
 /// Create a non-compound version, keeping only leaf nodes.
-pub(crate) fn as_non_compound_graph(
+pub fn as_non_compound_graph(
     g: &Graph<NodeLabel, EdgeLabel>,
 ) -> Graph<NodeLabel, EdgeLabel> {
     let mut simplified = Graph::with_options(GraphOptions {
@@ -152,7 +152,7 @@ pub(crate) fn intersect_rect(rect: &NodeLabel, point: &Point) -> Point {
 }
 
 /// Build a 2D matrix of node IDs indexed by [rank][order].
-pub(crate) fn build_layer_matrix(g: &Graph<NodeLabel, EdgeLabel>) -> Vec<Vec<String>> {
+pub fn build_layer_matrix(g: &Graph<NodeLabel, EdgeLabel>) -> Vec<Vec<String>> {
     let max_r = max_rank(g);
     if max_r < 0 {
         return vec![];
@@ -185,7 +185,7 @@ pub(crate) fn max_rank(g: &Graph<NodeLabel, EdgeLabel>) -> i32 {
 }
 
 /// Normalize ranks so minimum rank is 0.
-pub(crate) fn normalize_ranks(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn normalize_ranks(g: &mut Graph<NodeLabel, EdgeLabel>) {
     let min_rank = g
         .nodes()
         .iter()
@@ -206,7 +206,7 @@ pub(crate) fn normalize_ranks(g: &mut Graph<NodeLabel, EdgeLabel>) {
 }
 
 /// Remove empty ranks from the layering.
-pub(crate) fn remove_empty_ranks(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn remove_empty_ranks(g: &mut Graph<NodeLabel, EdgeLabel>) {
     let ranks: Vec<i32> = g
         .nodes()
         .iter()

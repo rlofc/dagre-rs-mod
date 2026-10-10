@@ -32,13 +32,114 @@ use self::cross_count::cross_count;
 use self::init_order::init_order;
 use self::sort_subgraph::sort_subgraph;
 
+/// Yieldable state machine for the order() sweep loop.
+///
+/// Each call to `step()` runs one sweep iteration (up or down).
+/// Returns `true` when all sweeps are complete.
+pub struct OrderState {
+    down_ranks: Vec<i32>,
+    up_ranks: Vec<i32>,
+    nodes_by_rank: BTreeMap<i32, Vec<String>>,
+    tie_keep_first: bool,
+    best_cc: usize,
+    best: Option<Vec<Vec<String>>>,
+    i: usize,
+    last_best: usize,
+    done: bool,
+}
+
+impl OrderState {
+    pub fn new(g: &Graph<NodeLabel, EdgeLabel>) -> Self {
+        let mr = max_rank(g);
+        let tie_keep_first = g
+            .graph_label::<GraphLabel>()
+            .is_some_and(|gl| gl.tie_keep_first);
+        let down_ranks: Vec<i32> = if mr >= 0 { (1..=mr).collect() } else { Vec::new() };
+        let up_ranks: Vec<i32> = if mr >= 0 { (0..mr).rev().collect() } else { Vec::new() };
+
+        let mut nodes_by_rank: BTreeMap<i32, Vec<String>> = BTreeMap::new();
+        for v in g.nodes() {
+            if let Some(node) = g.node(&v) {
+                if let Some(rank) = node.rank {
+                    nodes_by_rank.entry(rank).or_default().push(v.clone());
+                }
+                if let (Some(min_r), Some(max_r)) = (node.min_rank, node.max_rank) {
+                    for r in min_r..=max_r {
+                        if Some(r) != node.rank {
+                            nodes_by_rank.entry(r).or_default().push(v.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        let done = mr < 0;
+
+        Self {
+            down_ranks,
+            up_ranks,
+            nodes_by_rank,
+            tie_keep_first,
+            best_cc: usize::MAX,
+            best: None,
+            i: 0,
+            last_best: 0,
+            done,
+        }
+    }
+
+    /// Extract the final best layering. Only valid after `step()` returns `true`.
+    pub fn layering(&self) -> Option<&[Vec<String>]> {
+        self.best.as_deref()
+    }
+
+    /// Run one sweep iteration. Returns `true` when all sweeps are complete.
+    pub fn step(&mut self, g: &mut Graph<NodeLabel, EdgeLabel>) -> bool {
+        if self.done {
+            return true;
+        }
+
+        let (ranks, relationship) = if !self.i.is_multiple_of(2) {
+            (&self.down_ranks, Relationship::InEdges)
+        } else {
+            (&self.up_ranks, Relationship::OutEdges)
+        };
+        let bias_right = self.i % 4 >= 2;
+
+        sweep_layer_graphs(g, ranks, &self.nodes_by_rank, relationship, bias_right);
+
+        let layering = build_layer_matrix(g);
+        let cc = cross_count(g, &layering);
+
+        if cc < self.best_cc {
+            self.last_best = 0;
+            self.best = Some(layering.clone());
+            self.best_cc = cc;
+        } else if cc == self.best_cc && !self.tie_keep_first {
+            self.best = Some(layering);
+        }
+
+        self.i += 1;
+        self.last_best += 1;
+
+        if self.last_best >= 4 {
+            if let Some(ref best_layering) = self.best {
+                assign_order(g, best_layering);
+            }
+            self.done = true;
+            return true;
+        }
+        false
+    }
+}
+
 /// Assign `order` to each node, minimizing edge crossings.
 ///
 /// This is the main entry point for the ordering phase.
-pub(crate) fn order(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn order(g: &mut Graph<NodeLabel, EdgeLabel>) -> Option<Vec<Vec<String>>> {
     let mr = max_rank(g);
     if mr < 0 {
-        return;
+        return None;
     }
     let tie_keep_first = g
         .graph_label::<GraphLabel>()
@@ -109,6 +210,7 @@ pub(crate) fn order(g: &mut Graph<NodeLabel, EdgeLabel>) {
     if let Some(ref best_layering) = best {
         assign_order(g, best_layering);
     }
+    best
 }
 
 /// Execute one sweep across the layer graphs, sorting each layer and

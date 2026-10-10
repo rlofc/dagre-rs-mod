@@ -15,7 +15,7 @@ use crate::graph::Graph;
 /// Post-conditions:
 ///   1. All edges span exactly 1 rank
 ///   2. Dummy nodes fill in gaps for longer edges
-pub(crate) fn run(g: &mut Graph<NodeLabel, EdgeLabel>, dummy_chains: &mut Vec<String>) {
+pub fn run(g: &mut Graph<NodeLabel, EdgeLabel>, dummy_chains: &mut Vec<String>) {
     let edges: Vec<_> = g.edges();
     for e in edges {
         normalize_edge(
@@ -109,7 +109,7 @@ fn normalize_edge(
 }
 
 /// Restore original edges, removing dummy nodes and collecting edge points.
-pub(crate) fn undo(g: &mut Graph<NodeLabel, EdgeLabel>, dummy_chains: &[String]) {
+pub fn undo(g: &mut Graph<NodeLabel, EdgeLabel>, dummy_chains: &[String]) {
     for chain_start in dummy_chains {
         let mut v = chain_start.clone();
 

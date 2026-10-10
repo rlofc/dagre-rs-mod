@@ -23,7 +23,7 @@ use crate::graph::Graph;
 use crate::layout::types::{EdgeLabel, NodeLabel, Ranker};
 
 /// Assigns ranks to all nodes in the graph using the configured ranker algorithm.
-pub(crate) fn rank(g: &mut Graph<NodeLabel, EdgeLabel>, ranker: Ranker) {
+pub fn rank(g: &mut Graph<NodeLabel, EdgeLabel>, ranker: Ranker) {
     match ranker {
         Ranker::NetworkSimplex => network_simplex_ranker(g),
         Ranker::TightTree => tight_tree_ranker(g),

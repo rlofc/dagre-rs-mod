@@ -20,7 +20,7 @@ struct PathData {
 
 /// Walk dummy chains and set their parent to the appropriate subgraph
 /// using LCA-based path finding with postorder numbering.
-pub(crate) fn parent_dummy_chains(g: &mut Graph<NodeLabel, EdgeLabel>) {
+pub fn parent_dummy_chains(g: &mut Graph<NodeLabel, EdgeLabel>) {
     let dummy_chains: Vec<String> = g
         .graph_label::<GraphLabel>()
         .map(|gl| gl.dummy_chains.clone())
